@@ -218,3 +218,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# project data (large, not versioned)
+results/
+data/
+logs/
+runs/
+.venv/
+*.sbatch
+
+# SMPL body model (license-restricted, do not commit)
+SMPL_python_*
+*.pkl
