@@ -16,6 +16,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import motion
+import kinematics
 from dataset import canonicalise, style_value
 from model import RhythmFlow
 from smpl_fk import load_skeleton
@@ -42,7 +43,7 @@ def build_item(seq, start, N, audio_full, style, stats, audio_dim=35):
     out["x"][:N], out["audio"][:N] = x, a
     out["valid"][:N] = 1.0
     out["keyframe"][0] = out["keyframe"][N - 1] = 1.0
-    out["style"] = np.float32(style)
+    out["style"] = np.asarray(style, np.float32)
     return out, joints
 
 
@@ -114,8 +115,14 @@ def main():
     parents = torch.tensor(par_np, dtype=torch.long, device=dev)
 
     ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
+    # Infer the dial count from the checkpoint rather than the current
+    # kinematics.NAMES, so an older checkpoint still loads after the dial set changes.
+    n_style = ck["ema"]["null_style"].shape[0]
+    if n_style != len(kinematics.NAMES):
+        print(f"WARNING: checkpoint has {n_style} dials but kinematics.NAMES has "
+              f"{len(kinematics.NAMES)}; descriptors may not correspond", flush=True)
     model = RhythmFlow(d_model=ck["args"]["d_model"], nlayers=ck["args"]["nlayers"],
-                       max_len=ck["args"]["max_len"]).to(dev)
+                       max_len=ck["args"]["max_len"], n_style=n_style).to(dev)
     model.load_state_dict(ck["ema"] if args.weights == "ema" else ck["model"])
     model.eval()
     print(f"loaded step {ck['step']} ({args.weights} weights), device {dev}", flush=True)
@@ -138,7 +145,8 @@ def main():
         items.append(it)
         gts.append(np.pad(gt_joints, ((0, MAXLEN - N), (0, 0), (0, 0))))
         meta.append(dict(group=group, seq=seq_name, N=N, music=music_id,
-                         style=float(style), label=label))
+                         style=np.asarray(style, np.float32).tolist(),
+                         label=label))
 
     # --- 1. reconstructions across gap lengths and genres -------------------
     ordered = sorted(seqs)
@@ -149,8 +157,8 @@ def main():
         start = max(0, (len(s["root"]) - N) // 2)
         _, _, j = canonicalise(s["rot6d"][start:start + N], s["root"][start:start + N],
                             s["joints"][start:start + N])
-        sv = style_value(j[1:-1] if N > 2 else j)
-        stl = np.searchsorted(stats["style_q"], sv) / 100.0
+        stl = kinematics.to_percentile(
+            style_value(j[1:-1] if N > 2 else j), stats["style_q"])
         add("recon", name, start, N, str(s["music"]),
             stl, f"{name.split('_')[0]}  gap {N/30:.1f}s")
 
@@ -161,20 +169,24 @@ def main():
     start = max(0, (len(s["root"]) - N) // 2)
     _, _, j = canonicalise(s["rot6d"][start:start + N], s["root"][start:start + N],
                         s["joints"][start:start + N])
-    base_style = np.searchsorted(stats["style_q"], style_value(j[1:-1])) / 100.0
+    base_style = kinematics.to_percentile(style_value(j[1:-1]), stats["style_q"])
     test_music = sorted({str(v["music"]) for v in seqs.values()})
     for mid in test_music[:5]:
         add("music", base, start, N, mid, base_style, f"music {mid}")
 
-    # --- 3. style dial sweep ------------------------------------------------
-    for stl in [0.05, 0.3, 0.55, 0.8, 0.95]:
-        add("style", base, start, N, str(s["music"]), stl, f"style {stl:.2f}")
+    # --- 3. one sweep per dial, others held at the clip's own values --------
+    for k, dial in enumerate(kinematics.NAMES):
+        for lvl in [0.05, 0.3, 0.5, 0.7, 0.95]:
+            v = base_style.copy()
+            v[k] = lvl
+            add(f"style:{dial}", base, start, N, str(s["music"]), v,
+                f"{dial} {lvl:.2f}")
 
     b = collate(items, dev)
     # Panels within the music and style comparisons share one noise draw, so the
     # only thing differing between them is the conditioning.
-    tie = [[k for k, m in enumerate(meta) if m["group"] == g]
-           for g in ("music", "style")]
+    groups = ["music"] + [f"style:{d}" for d in kinematics.NAMES]
+    tie = [[k for k, m in enumerate(meta) if m["group"] == g] for g in groups]
     tie = [t for t in tie if len(t) > 1]
     print(f"sampling {len(items)} clips, {args.steps} steps, guidance {args.guidance}; "
           f"noise tied within {[len(t) for t in tie]}", flush=True)
@@ -189,16 +201,20 @@ def main():
         ends = [0, N - 1]
         m["endpoint_cm"] = float(
             np.linalg.norm(gen[k, ends] - gt[k, ends], axis=-1).mean() * 100)
-        m["style_achieved"] = style_value(gen[k, 1:N - 1])
-        m["style_gt"] = style_value(gt[k, 1:N - 1])
+        m["style_achieved"] = kinematics.to_percentile(
+            style_value(gen[k, 1:N - 1]), stats["style_q"]).tolist()
+        m["style_raw"] = style_value(gen[k, 1:N - 1]).tolist()
+        m["style_gt"] = kinematics.to_percentile(
+            style_value(gt[k, 1:N - 1]), stats["style_q"]).tolist()
 
     np.savez_compressed(args.out, gen=gen, gt=gt, parents=par_np,
                         meta=np.array(meta, dtype=object), step=ck["step"])
     print(f"wrote {args.out}")
     for m in meta:
-        print(f"  {m['group']:6s} {m['label']:22s} endpoint {m['endpoint_cm']:5.1f}cm "
-              f"style req {m['style']:.2f} achieved {m['style_achieved']:.1f} "
-              f"(gt {m['style_gt']:.1f})")
+        req = " ".join(f"{v:.2f}" for v in m["style"])
+        ach = " ".join(f"{v:.2f}" for v in m["style_achieved"])
+        print(f"  {m['group']:14s} {m['label']:18s} endpoint {m['endpoint_cm']:5.1f}cm")
+        print(f"       req [{req}] -> achieved [{ach}]")
 
 
 if __name__ == "__main__":

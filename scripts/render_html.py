@@ -5,6 +5,9 @@ off the cluster and opened directly in a browser.
 """
 import argparse, base64, html, io, os, sys
 import numpy as np
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import kinematics
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -108,7 +111,8 @@ def main():
             sections["recon"].append(video_block(path, cap))
             total += sz
 
-    for grp, title in [("music", "music"), ("style", "style")]:
+    style_groups = [f"style:{d}" for d in kinematics.NAMES]
+    for grp in ["music"] + style_groups:
         idx = [k for k, m in enumerate(meta) if m["group"] == grp]
         if not idx:
             continue
@@ -118,12 +122,18 @@ def main():
         sz = render_panels([gen[k] for k in idx], labels, parents, N, path)
         if grp == "music":
             cap = ("Identical start and end pose in every panel; only the music "
-                   "differs. All five tracks are unseen in training.")
+                   "differs. All five tracks are unseen in training. Noise is tied "
+                   "across panels, so the audio is the only variable.")
+            sections["music"].append(video_block(path, cap))
         else:
-            achieved = ", ".join(f"{meta[k]['style']:.2f}&rarr;{meta[k]['style_achieved']:.1f}"
-                                 for k in idx)
-            cap = f"Same endpoints and music, style dial swept. requested&rarr;achieved: {achieved}"
-        sections[grp].append(video_block(path, cap))
+            dial = grp.split(":", 1)[1]
+            di = kinematics.NAMES.index(dial)
+            pairs = ", ".join(
+                f"{meta[k]['style'][di]:.2f}&rarr;{meta[k]['style_achieved'][di]:.2f}"
+                for k in idx)
+            cap = (f"<b>{html.escape(dial)}</b> swept; the other four dials held at "
+                   f"this clip's own values. requested&rarr;achieved: {pairs}")
+            sections["style"].append(video_block(path, cap))
         total += sz
 
     page = f"""<!doctype html>
