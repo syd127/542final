@@ -69,14 +69,91 @@ Reproduce with `scripts/evaluate.sbatch`.
   minima per second, the model 4.2–5.7. More beats means more chances to land
   near some audio beat. Per-beat alignment is *worse* than real dance. Do not
   report BAS without beat density beside it.
-- **More ODE steps is worse**, which is surprising. The sweep ran at fixed
-  guidance 2.0, and optimal guidance depends on step count, so accumulated
-  classifier-free-guidance overshoot is a plausible alternative explanation to
-  anything intrinsic. A guidance x NFE grid would settle it and is cheap. Until
-  then, state the efficiency result with that caveat.
-- **Jitter and foot skate are real defects.** HFR is 14x the ground-truth floor
-  even at the best step count; foot skate is 2–4.5x GT. Both are visible in the
-  sample videos.
+- **More ODE steps is worse**, which is surprising, and it is **not** a guidance
+  artifact — see the grid below, where it holds at guidance 1.0 with no
+  extrapolation at all. State the efficiency result without that caveat.
+- **This table is at guidance 2.0, which is the wrong setting.** Guidance 1.0 is
+  better at every step count; the corrected best configuration is below.
+
+### Guidance x NFE grid (`scripts/gpu_diagnostics.py`)
+
+| guidance | NFE | fwd passes | endpoint cm | HFR % | skate | BAS | beats/s |
+|---|---|---|---|---|---|---|---|
+| ground truth | – | – | 0.00 | 0.013 | 0.337 | 0.746 | 3.25 |
+| **1.0** | **2** | **2** | **3.74** | 0.537 | 0.627 | 0.804 | 4.90 |
+| 1.0 | 5 | 5 | 3.86 | **0.145** | 0.611 | 0.774 | 4.28 |
+| 1.0 | 10 | 10 | 4.55 | 0.266 | 0.734 | 0.786 | 4.46 |
+| 1.0 | 50 | 50 | 5.24 | 0.703 | 0.976 | 0.816 | 4.99 |
+| 1.5 | 2 | 4 | 3.97 | 0.497 | 0.673 | 0.792 | 4.82 |
+| 2.0 | 2 | 4 | 4.36 | 0.516 | 0.755 | 0.775 | 4.71 |
+| 2.0 | 5 | 10 | 4.60 | 0.179 | 0.684 | 0.761 | 4.22 |
+| 3.0 | 2 | 4 | 5.51 | 0.589 | 0.931 | 0.772 | 4.81 |
+| 3.0 | 50 | 100 | 7.06 | 0.648 | 1.097 | 0.805 | 4.80 |
+
+Three things this settles:
+
+1. **Guidance 1.0 wins monotonically.** At NFE 2: 3.74 / 3.97 / 4.36 / 5.51 cm for
+   guidance 1.0 / 1.5 / 2.0 / 3.0. Everything reported above at guidance 2.0 was
+   at a suboptimal setting.
+2. **Best configuration: guidance 1.0, 2 steps, 2 forward passes, 3.74 cm** — 14%
+   better than the headline number at half the compute. Report **forward passes**,
+   not steps: guidance above 1.0 needs two passes per step.
+3. **"More steps is worse" is real**, since it holds at guidance 1.0 where no
+   extrapolation occurs. Jitter has its own optimum at 5 steps.
+
+### Jitter is fixable as post-processing (`scripts/diagnostics.py`)
+
+A zero-phase low-pass on the generated output, with the two conditioned keyframes
+re-pinned afterwards:
+
+| variant | endpoint cm | HFR % | skate |
+|---|---|---|---|
+| ground truth | 0.00 | 0.004 | 0.255 |
+| generated, unfiltered | 4.29 | 0.721 | 0.707 |
+| generated, 8 Hz low-pass | 4.29 | **0.010** | 0.526 |
+| generated, 6 Hz low-pass | 4.29 | **0.000** | 0.496 |
+
+Jitter goes from 180x the ground-truth floor to 2.5x, foot skate falls 26%, and
+**endpoint error does not move at all**. No training needed. The same
+band-limiting insight that fixes the *metric* (§5) also fixes the *output*.
+
+### BAS has usable dynamic range, and the model uses the music at half strength
+
+Scoring motion against its own track versus against wrong tracks (tied noise)
+establishes the chance level the metric never reports:
+
+| | own track | wrong tracks | headroom |
+|---|---|---|---|
+| ground-truth motion | 0.783 | 0.680 | **+0.103** |
+| generated motion | 0.832 | 0.775 | +0.056 |
+
+So BAS is not degenerate, and the correct claim is **not** "the model ignores the
+music" but "the model extracts roughly half the beat discrimination real dance
+carries", while inflating its absolute score with 4.61 beats/s against 3.33.
+
+### The audio path is not the bottleneck
+
+Cross-attention diagonality on the trained model — share of attention mass within
++/-2 frames of the diagonal, against a uniform baseline of 0.033:
+
+| layers | mass | vs uniform |
+|---|---|---|
+| 0–2 | 0.032–0.036 | ~1.0x (flat) |
+| 3–6 | 0.112–0.154 | **3.4–4.6x** |
+| 7 | 0.068 | 2.0x |
+
+Mean 2.56x uniform. The middle layers attend to temporally local audio, and a
+separate check of the trained weights found the highest effective drive on the
+**onset, envelope and beat** channels (MFCC-1 is 1.5x *below* beat despite 2000x
+the raw scale). So the audio features are read and are not mis-scaled.
+
+**This killed a planned run.** The hypothesis was that cross-attention lets the
+model ignore the audio by flattening its weights, motivating a FlowerDance-style
+switch to frame-aligned residual addition. The diagnostic falsified it for the
+cost of one forward pass, where the run would have cost ~8 GPU-hours.
+
+- **Foot skate remains a real defect** at 2–4.5x GT unfiltered, 1.9x after the
+  8 Hz filter.
 
 ### Style dial controllability (`scripts/controllability.py`)
 
@@ -428,16 +505,28 @@ These shaped the design and are easy to rediscover painfully.
 ## 9. What is missing
 
 - **No FID / diversity metrics.** Distributional realism is unmeasured; only
-  endpoint accuracy, beat alignment, jitter and skate are.
+  endpoint accuracy, beat alignment, jitter and skate are. Note EDGE argues
+  FID_k/FID_g are unreliable on AIST++; its PFC metric is cheaper and speaks
+  directly to foot skate.
+- **Controllability has not been re-measured at guidance 1.0.** The dial numbers
+  in §2 are at guidance 2.0, which the grid shows is the wrong setting for motion
+  quality. Dropping to 1.0 removes the guidance amplification the dials rely on,
+  so there is likely an accuracy/control trade-off here and it is unmeasured.
+  Measure gain and leakage at both settings before quoting either.
 - **No matched diffusion baseline.** The flow-vs-diffusion efficiency claim in the
   related-work draft is not tested. Scope the claim to "flow matching at varying
   NFE" or train a diffusion model with the identical backbone (~15 GPU-hours).
 - **Controllability needs more samples** — currently 1 base clip, 1 seed per
   level, Spearman over 5 points.
-- **NFE sweep is confounded with guidance**, fixed at 2.0. Needs a guidance x NFE grid.
-- **No from-scratch no-audio model** for a clean audio ablation.
-- **Jitter is unfixed.** The spectral analysis gives a principled target: penalise
-  high-frequency power during training, or filter at output.
+- ~~NFE sweep confounded with guidance~~ — **resolved**, see the grid in §2.
+- **No from-scratch no-audio model.** Lower priority than it looks: the
+  mismatched-track test in §2 is sharper, free, and already run. The CFG-null
+  ablation is also what EDGE does.
+- ~~Jitter unfixed~~ — **largely resolved** by an 8 Hz output filter (§2), which
+  costs nothing and does not move endpoint error. Penalising high-frequency power
+  during training remains the principled fix if the filter is considered a cheat;
+  the filter's defence is that ground truth keeps 99.98% of its power below 6 Hz,
+  and both rows are always reported.
 - **Skeleton rendering only**, no mesh, so subtle quality is hard to judge.
 
 ## 10. Honest novelty assessment

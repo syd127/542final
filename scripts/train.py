@@ -163,6 +163,9 @@ def main():
     p.add_argument("--ckpt-every", type=int, default=2000)
     p.add_argument("--val-every", type=int, default=1000)
     p.add_argument("--max-hours", type=float, default=7.5)
+    p.add_argument("--deadline", type=float, default=0.0,
+                   help="absolute epoch seconds to stop by; overrides --max-hours. "
+                        "Set from the job start time so setup counts against the budget.")
     p.add_argument("--sample-steps", type=int, default=20)
     p.add_argument("--overfit", type=int, default=0)
     args = p.parse_args()
@@ -256,7 +259,9 @@ def main():
 
             if step % args.ckpt_every == 0:
                 save()
-            if (time.time() - t0) / 3600 > args.max_hours:
+            over = (time.time() > args.deadline if args.deadline > 0
+                    else (time.time() - t0) / 3600 > args.max_hours)
+            if over:
                 print("time budget reached; checkpointing and exiting", flush=True)
                 run = False
 
