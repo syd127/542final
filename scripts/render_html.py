@@ -3,10 +3,9 @@
 The output is self-contained (videos are base64-embedded), so it can be copied
 off the cluster and opened directly in a browser.
 """
-import argparse, base64, html, io, os, sys
+import argparse, base64, html, os, sys
 import numpy as np
-import sys, os as _os
-sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kinematics
 import matplotlib
 matplotlib.use("Agg")

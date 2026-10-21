@@ -6,7 +6,7 @@ model sees their values plus a binary observation mask and must produce the
 interior. Windows are canonicalised to the first frame so the task is invariant
 to where in the room the dancer happens to be.
 """
-import json, os, re, sys
+import os, sys
 import numpy as np
 import torch
 from torch.utils.data import Dataset

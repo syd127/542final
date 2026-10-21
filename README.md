@@ -345,11 +345,55 @@ module load python/3.11.5 && source .venv/bin/activate
 | metrics | `sbatch scripts/evaluate.sbatch` | NFE sweep, SLERP, no-audio, controllability |
 | status | `scripts/status.sh <run>` | queue, step count, loss history |
 
-Artifacts: `results/rhythmflow_style5.html` (3.7 MB, self-contained — `scp` it
-and open it), `results/eval_style5.npz`, `runs/style5/last.pt` (step 200000,
-EMA weights included).
+### Every file in `scripts/`
 
-`runs/main` is the 1-scalar baseline; `runs/style5` is the 5-dial model.
+**Library modules** (imported, not run directly):
+
+| file | what it holds |
+|---|---|
+| `kinematics.py` | the five style dials, the 6 Hz filter, quantile normalisation. **The only file to edit to change the dial set** |
+| `motion.py` | 6D rotation conversions, differentiable FK, foot contacts, the 151-d layout |
+| `smpl_fk.py` | reads the SMPL pickle with a restricted unpickler; rest joints + kinematic tree |
+| `dataset.py` | clip sampling, per-clip canonicalisation, style labelling |
+| `model.py` | the transformer velocity field and its three conditioning paths |
+
+**Pipeline stages** (run in this order):
+
+| file | stage |
+|---|---|
+| `build_motion_store.py` | stitch the HF mirror into full sequences, verify against the official 411 |
+| `extract_audio.py` | 60 wav tracks → 35-d features at 30 fps |
+| `build_dataset.py` | FK, floor alignment, contacts → per-sequence arrays |
+| `compute_stats.py` | normalisation stats + per-dial quantile tables + dial correlation matrix |
+| `train.py` | the training loop, resumable |
+| `generate_samples.py` | held-out samples, music swap, per-dial sweeps |
+| `render_html.py` | skeleton videos → one self-contained HTML page |
+| `evaluate.py` | NFE sweep, SLERP baseline, no-audio ablation, all metrics |
+| `controllability.py` | per-dial response, gain, leakage vs the data prior |
+
+**Checks and one-off analyses** (safe to run any time, nothing depends on them):
+
+| file | what it answers |
+|---|---|
+| `check_model.py` | do shapes, masking and gradients work before spending a GPU job |
+| `check_audio_align.py` | is the audio zero-offset to the motion (yes, 0.999) |
+| `spectral_analysis.py` | where motion energy and jitter sit in frequency — produces §5's tables |
+
+**Job scripts**: `prep.sbatch`, `restyle_and_launch.sbatch`, `train.sbatch`,
+`samples.sbatch`, `evaluate.sbatch`, plus `status.sh`. Note `.gitignore` excludes
+`*.sbatch`, so these are **not in version control** — `train.sbatch` in particular
+holds the crash-resilient chaining logic described in §8.
+
+### Artifacts
+
+| path | what it is |
+|---|---|
+| `results/rhythmflow_style5.html` | **current** qualitative page, 3.7 MB, self-contained — `scp` and open |
+| `results/eval_style5.npz` | the metrics table from `evaluate.py` |
+| `results/samples_style5.npz` | generated + ground-truth joints for the 36 sample clips |
+| `results/baseline_1dial.html` | the earlier single-scalar model, kept for comparison |
+| `runs/style5/last.pt` | **the model**, step 200000, EMA weights included |
+| `runs/main/last.pt` | the 1-scalar baseline, also 200000 steps |
 
 ---
 

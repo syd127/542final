@@ -5,7 +5,7 @@ on the same held-out clips. Human dance motion is essentially bandlimited; a
 generated-minus-real excess concentrated at high frequency is jitter, and tells
 us where to put a filter cutoff for the style descriptors.
 """
-import argparse, os, sys
+import argparse, os
 import numpy as np
 from scipy.signal import welch
 

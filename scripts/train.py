@@ -10,7 +10,6 @@ and exits cleanly at --max-hours; rerunning the same command resumes.
 import argparse, os, sys, time
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

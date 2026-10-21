@@ -5,7 +5,7 @@ inside the full track by cross-correlation. If window w of a sequence lands at
 w*75 frames (2.5 s), motion frame 0 corresponds to music time 0 and audio can be
 indexed with the motion frame number directly.
 """
-import glob, io, os, re, sys
+import glob, io, os, re
 import numpy as np
 import pyarrow.parquet as pq
 import soundfile as sf

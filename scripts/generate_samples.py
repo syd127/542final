@@ -10,7 +10,7 @@ Three groups, written to a single npz for the renderer:
 The test split shares no sequence and no music track with training, so both the
 choreography and the audio are new to the model.
 """
-import argparse, os, re, sys
+import argparse, os, sys
 import numpy as np
 import torch
 
